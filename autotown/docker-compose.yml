@@ -1,0 +1,137 @@
+version: '3.8'
+
+services:
+  bg_removal:
+    build:
+      context: ./bg_removal
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"
+    networks:
+      - app-network
+    volumes:
+      - bg_removal_data:/root/.cache/
+
+  light_fix:
+    build:
+      context: ./light_fix
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8000"
+    networks:
+      - app-network
+
+  focus_fix:
+    build:
+      context: ./focus_fix
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8000"
+    networks:
+      - app-network
+
+  classifier:
+    build:
+      context: ./classifier
+      dockerfile: Dockerfile
+    ports:
+      - "8004:8000"
+    networks:
+      - app-network
+
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: mydatabase
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - app-network
+
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"  # MinIO API
+      - "9001:9001"  # MinIO Console
+    environment:
+      MINIO_ROOT_USER: root
+      MINIO_ROOT_PASSWORD: password
+    command: server /data --address :9000 --console-address :9001
+    volumes:
+      - minio_data:/data
+    networks:
+      - app-network
+
+  create-buckets:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 10;
+      /usr/bin/mc alias set myminio http://127.0.0.1:9000 root password;
+      /usr/bin/mc mb myminio/photos;
+      /usr/bin/mc anonymous set public myminio/photos;
+      exit 0;
+      "
+    network_mode: service:minio
+
+  backend:
+    build:
+      context: ./service/backend
+      dockerfile: Dockerfile
+    depends_on:
+      - db
+      - minio
+    ports:
+      - "8010:8000"
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://user:password@db:5432/mydatabase"
+    networks:
+      - app-network
+
+  processor:
+    build:
+      context: ./service/processor
+      dockerfile: Dockerfile
+    depends_on:
+      - backend
+      - db
+      - minio
+      - bg_removal
+      - light_fix
+      - focus_fix
+      - classifier
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://user:password@db:5432/mydatabase"
+    networks:
+      - app-network
+
+  gradio_front:
+    build:
+      context: ./service/gradio_front
+    ports:
+      - "7860:7860"
+    depends_on:
+      - backend
+      - minio
+    environment:
+      BACKEND_URL: "http://backend:8000"
+      MINIO_URL: "http://minio:9000"
+    volumes:
+      - ./files:/app/files
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  bg_removal_data:
+  db_data:
+  minio_data:
